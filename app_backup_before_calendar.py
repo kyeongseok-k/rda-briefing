@@ -1,18 +1,11 @@
-from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 import os
 import re
 import html
 import httpx
-import base64
-import hmac
-import hashlib
-import json
-import time
-from urllib.parse import urlencode
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from email.utils import parsedate_to_datetime
 
 app = FastAPI(title="Daily Briefing API")
@@ -22,25 +15,6 @@ NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET")
 SERVICE_ACCESS_TOKEN = os.getenv("SERVICE_ACCESS_TOKEN")
 
 NAVER_NEWS_URL = "https://openapi.naver.com/v1/search/news.json"
-
-
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
-GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
-OAUTH_SIGNING_SECRET = os.getenv("OAUTH_SIGNING_SECRET")
-
-GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-GOOGLE_OAUTH_CALLBACK_URL = "https://rda-briefing.vercel.app/oauth/google/callback"
-GOOGLE_SCOPES = (
-    "https://www.googleapis.com/auth/calendar.calendarlist.readonly "
-    "https://www.googleapis.com/auth/calendar.events.readonly"
-)
-
-KST = timezone(timedelta(hours=9))
-
-
-
-
 
 CATEGORY_QUERIES = {
     "agriculture": [
@@ -203,147 +177,9 @@ async def briefing(
         "news": news_result,
     }
 
-def b64url_encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
+from datetime import datetime, timedelta, timezone
 
-def b64url_decode(data: str) -> bytes:
-    padding = "=" * (-len(data) % 4)
-    return base64.urlsafe_b64decode(data + padding)
-
-def sign_payload(payload: dict) -> str:
-    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    sig = hmac.new(OAUTH_SIGNING_SECRET.encode("utf-8"), raw, hashlib.sha256).digest()
-    return f"{b64url_encode(raw)}.{b64url_encode(sig)}"
-
-def verify_payload(token: str) -> dict:
-    try:
-        raw_b64, sig_b64 = token.split(".", 1)
-        raw = b64url_decode(raw_b64)
-        sig = b64url_decode(sig_b64)
-        expected = hmac.new(OAUTH_SIGNING_SECRET.encode("utf-8"), raw, hashlib.sha256).digest()
-        if not hmac.compare_digest(sig, expected):
-            raise ValueError("Invalid signature")
-        return json.loads(raw.decode("utf-8"))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid signed payload: {str(e)}")
-
-
-@app.get("/oauth/google/authorize")
-async def google_authorize(request: Request):
-    redirect_uri_from_chatgpt = request.query_params.get("redirect_uri")
-    state_from_chatgpt = request.query_params.get("state")
-
-    if not redirect_uri_from_chatgpt or not state_from_chatgpt:
-        raise HTTPException(status_code=400, detail="Missing redirect_uri or state")
-
-    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not OAUTH_SIGNING_SECRET:
-        raise HTTPException(status_code=500, detail="Missing Google OAuth environment variables")
-
-    relay_state = sign_payload({
-        "chatgpt_redirect_uri": redirect_uri_from_chatgpt,
-        "chatgpt_state": state_from_chatgpt,
-        "ts": int(time.time())
-    })
-
-    params = {
-        "client_id": GOOGLE_CLIENT_ID,
-        "redirect_uri": GOOGLE_OAUTH_CALLBACK_URL,
-        "response_type": "code",
-        "scope": GOOGLE_SCOPES,
-        "access_type": "offline",
-        "prompt": "consent",
-        "state": relay_state,
-    }
-
-    return RedirectResponse(url=f"{GOOGLE_AUTH_URL}?{urlencode(params)}")
-
-
-@app.get("/oauth/google/callback")
-async def google_callback(code: str, state: str):
-    relay = verify_payload(state)
-
-    chatgpt_redirect_uri = relay["chatgpt_redirect_uri"]
-    chatgpt_state = relay["chatgpt_state"]
-
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        token_resp = await client.post(
-            GOOGLE_TOKEN_URL,
-            data={
-                "client_id": GOOGLE_CLIENT_ID,
-                "client_secret": GOOGLE_CLIENT_SECRET,
-                "code": code,
-                "grant_type": "authorization_code",
-                "redirect_uri": GOOGLE_OAUTH_CALLBACK_URL,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-
-    if token_resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Google token exchange error: {token_resp.text}")
-
-    token_data = token_resp.json()
-
-    broker_code = sign_payload({
-        "access_token": token_data.get("access_token"),
-        "refresh_token": token_data.get("refresh_token"),
-        "expires_in": token_data.get("expires_in", 3600),
-        "created_at": int(time.time()),
-    })
-
-    redirect_back = f"{chatgpt_redirect_uri}?code={broker_code}&state={chatgpt_state}"
-    return RedirectResponse(url=redirect_back)
-
-
-@app.post("/oauth/google/token")
-async def google_token(request: Request):
-    form = await request.form()
-    grant_type = form.get("grant_type")
-
-    if grant_type == "authorization_code":
-        code = form.get("code")
-        if not code:
-            raise HTTPException(status_code=400, detail="Missing code")
-
-        payload = verify_payload(code)
-
-        return JSONResponse({
-            "access_token": payload["access_token"],
-            "token_type": "Bearer",
-            "expires_in": payload.get("expires_in", 3600),
-            "refresh_token": payload.get("refresh_token"),
-        })
-
-    if grant_type == "refresh_token":
-        refresh_token = form.get("refresh_token")
-        if not refresh_token:
-            raise HTTPException(status_code=400, detail="Missing refresh_token")
-
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            token_resp = await client.post(
-                GOOGLE_TOKEN_URL,
-                data={
-                    "client_id": GOOGLE_CLIENT_ID,
-                    "client_secret": GOOGLE_CLIENT_SECRET,
-                    "refresh_token": refresh_token,
-                    "grant_type": "refresh_token",
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-
-        if token_resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Google refresh error: {token_resp.text}")
-
-        token_data = token_resp.json()
-
-        return JSONResponse({
-            "access_token": token_data.get("access_token"),
-            "token_type": "Bearer",
-            "expires_in": token_data.get("expires_in", 3600),
-            "refresh_token": refresh_token,
-        })
-
-    raise HTTPException(status_code=400, detail="Unsupported grant_type")
-
+KST = timezone(timedelta(hours=9))
 
 async def fetch_google_calendar_list(access_token: str):
     headers = {"Authorization": f"Bearer {access_token}"}
@@ -353,7 +189,6 @@ async def fetch_google_calendar_list(access_token: str):
         if resp.status_code != 200:
             raise HTTPException(status_code=502, detail=f"Google Calendar list error: {resp.text}")
         return resp.json().get("items", [])
-
 
 async def fetch_google_events(access_token: str, calendar_id: str, time_min: str, time_max: str):
     headers = {"Authorization": f"Bearer {access_token}"}
@@ -370,7 +205,6 @@ async def fetch_google_events(access_token: str, calendar_id: str, time_min: str
             return []
         return resp.json().get("items", [])
 
-
 def summarize_workload(events):
     count = len(events)
     if count == 0:
@@ -380,7 +214,6 @@ def summarize_workload(events):
     if count <= 5:
         return "오늘은 일정과 집중 업무를 함께 운영해야 하는 날입니다."
     return "오늘은 일정이 많은 편이므로 즉시 대응 업무 중심으로 운영하는 것이 좋습니다."
-
 
 def build_todo(events):
     todos = []
@@ -392,7 +225,6 @@ def build_todo(events):
         todos.append("일정 사이 자투리 시간을 활용해 즉시 처리할 업무 우선 정리")
     todos.append("오늘 브리핑된 뉴스 중 업무 관련 기사 1~2건 우선 검토")
     return todos[:4]
-
 
 @app.post("/calendar/today")
 async def calendar_today(authorization: Optional[str] = Header(default=None)):
@@ -442,5 +274,3 @@ async def calendar_today(authorization: Optional[str] = Header(default=None)):
         "workload_summary": summarize_workload(all_events),
         "todo_suggestions": build_todo(all_events)
     }
-
-

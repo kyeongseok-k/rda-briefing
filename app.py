@@ -405,8 +405,15 @@ async def calendar_today(authorization: Optional[str] = Header(default=None)):
     access_token = authorization.replace("Bearer ", "", 1).strip()
 
     now = datetime.now(KST)
+
+    # 오늘 범위
     start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
+
+    # 어제 범위
+    yesterday = start_of_day - timedelta(days=1)
+    start_of_yesterday = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_yesterday = yesterday.replace(hour=23, minute=59, second=59, microsecond=0)
 
     calendar_list = await fetch_google_calendar_list(access_token)
 
@@ -425,27 +432,30 @@ async def calendar_today(authorization: Optional[str] = Header(default=None)):
             "summary": "Primary"
         })
 
-    all_events = []
-    seen = set()
+    today_events = []
+    yesterday_events = []
+    seen_today = set()
+    seen_yesterday = set()
 
     for cal in selected_calendars:
-        items = await fetch_google_events(
+        # 오늘 일정
+        today_items = await fetch_google_events(
             access_token,
             cal["id"],
             start_of_day.isoformat(),
             end_of_day.isoformat()
         )
-        for item in items:
+        for item in today_items:
             event_id = item.get("id")
-            if event_id and event_id in seen:
+            if event_id and event_id in seen_today:
                 continue
             if event_id:
-                seen.add(event_id)
+                seen_today.add(event_id)
 
             start = item.get("start", {}).get("dateTime") or item.get("start", {}).get("date")
             end = item.get("end", {}).get("dateTime") or item.get("end", {}).get("date")
 
-            all_events.append({
+            today_events.append({
                 "start": start,
                 "end": end,
                 "title": item.get("summary", "(제목 없음)"),
@@ -453,19 +463,68 @@ async def calendar_today(authorization: Optional[str] = Header(default=None)):
                 "calendar_name": cal["summary"]
             })
 
-    all_events.sort(key=lambda x: x["start"] or "")
+        # 어제 일정
+        yesterday_items = await fetch_google_events(
+            access_token,
+            cal["id"],
+            start_of_yesterday.isoformat(),
+            end_of_yesterday.isoformat()
+        )
+        for item in yesterday_items:
+            event_id = item.get("id")
+            if event_id and event_id in seen_yesterday:
+                continue
+            if event_id:
+                seen_yesterday.add(event_id)
+
+            start = item.get("start", {}).get("dateTime") or item.get("start", {}).get("date")
+            end = item.get("end", {}).get("dateTime") or item.get("end", {}).get("date")
+
+            yesterday_events.append({
+                "start": start,
+                "end": end,
+                "title": item.get("summary", "(제목 없음)"),
+                "location": item.get("location", ""),
+                "calendar_name": cal["summary"]
+            })
+
+    today_events.sort(key=lambda x: x["start"] or "")
+    yesterday_events.sort(key=lambda x: x["start"] or "")
+
+    yesterday_followups = summarize_yesterday_followups(yesterday_events)
 
     return {
         "date": start_of_day.date().isoformat(),
-        "events": all_events,
-        "workload_summary": summarize_workload(all_events),
-        "todo_suggestions": build_todo(all_events),
+        "events": today_events,
+        "yesterday_followups": yesterday_followups,
+        "workload_summary": summarize_workload(today_events),
+        "todo_suggestions": build_todo(today_events),
         "debug": {
             "calendar_count": len(calendar_list),
             "selected_calendar_count": len(selected_calendars),
             "selected_calendars": selected_calendars,
-            "event_count": len(all_events),
-            "time_min": start_of_day.isoformat(),
-            "time_max": end_of_day.isoformat(),
+            "today_event_count": len(today_events),
+            "yesterday_event_count": len(yesterday_events),
+            "yesterday_followup_count": len(yesterday_followups),
+            "time_min_today": start_of_day.isoformat(),
+            "time_max_today": end_of_day.isoformat(),
+            "time_min_yesterday": start_of_yesterday.isoformat(),
+            "time_max_yesterday": end_of_yesterday.isoformat(),
         }
     }
+
+
+def is_followup_candidate(title: str) -> bool:
+    if not title:
+        return False
+    keywords = ["회의", "검토", "제출", "보고", "발표", "요청", "마감", "작성"]
+    return any(keyword in title for keyword in keywords)
+
+
+def summarize_yesterday_followups(events):
+    followups = []
+    for event in events:
+        title = event.get("title", "")
+        if is_followup_candidate(title):
+            followups.append(event)
+    return followups[:5]

@@ -171,12 +171,9 @@ def root():
     return {"message": "Daily Briefing API is running"}
 
 @app.post("/briefing")
-async def briefing(
-    req: BriefingRequest,
-    authorization: Optional[str] = Header(default=None)
-):
-    if authorization != f"Bearer {SERVICE_ACCESS_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+async def briefing(req: BriefingRequest):
+
+
 
     if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET or not SERVICE_ACCESS_TOKEN:
         raise HTTPException(status_code=500, detail="Missing environment variables")

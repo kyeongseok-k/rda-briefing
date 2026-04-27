@@ -360,6 +360,8 @@ async def fetch_google_events(access_token: str, calendar_id: str, time_min: str
         "timeMax": time_max,
         "singleEvents": "true",
         "orderBy": "startTime",
+        "maxResults": 250,
+        "timeZone": "Asia/Seoul",
     }
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.get(url, headers=headers, params=params)
@@ -404,13 +406,22 @@ async def calendar_today(authorization: Optional[str] = Header(default=None)):
 
     calendar_list = await fetch_google_calendar_list(access_token)
 
-    selected_calendars = []
-    for cal in calendar_list:
-        if cal.get("selected", True):
-            selected_calendars.append({
-                "id": cal.get("id"),
-                "summary": cal.get("summary", "")
-            })
+selected_calendars = []
+
+for cal in calendar_list:
+    access_role = cal.get("accessRole")
+    if access_role in {"owner", "writer", "reader", "freeBusyReader"}:
+        selected_calendars.append({
+            "id": cal.get("id"),
+            "summary": cal.get("summary", "")
+        })
+
+# 혹시 primary가 빠지는 경우를 대비
+if not any(c["id"] == "primary" for c in selected_calendars):
+    selected_calendars.insert(0, {
+        "id": "primary",
+        "summary": "Primary"
+    })
 
     all_events = []
     for cal in selected_calendars:
@@ -433,11 +444,17 @@ async def calendar_today(authorization: Optional[str] = Header(default=None)):
 
     all_events.sort(key=lambda x: x["start"] or "")
 
-    return {
-        "date": start_of_day.date().isoformat(),
-        "events": all_events,
-        "workload_summary": summarize_workload(all_events),
-        "todo_suggestions": build_todo(all_events)
+return {
+    "date": start_of_day.date().isoformat(),
+    "events": all_events,
+    "workload_summary": summarize_workload(all_events),
+    "todo_suggestions": build_todo(all_events),
+    "debug": {
+        "calendar_count": len(calendar_list),
+        "selected_calendar_count": len(selected_calendars),
+        "selected_calendars": selected_calendars,
+        "event_count": len(all_events),
+        "time_min": start_of_day.isoformat(),
+        "time_max": end_of_day.isoformat(),
     }
-
-
+}

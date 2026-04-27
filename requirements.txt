@@ -3,3 +3,4 @@ httpx
 pydantic
 uvicorn
 google-auth
+python-multipart

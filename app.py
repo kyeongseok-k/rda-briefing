@@ -345,8 +345,12 @@ async def google_token(request: Request):
 async def fetch_google_calendar_list(access_token: str):
     headers = {"Authorization": f"Bearer {access_token}"}
     url = "https://www.googleapis.com/calendar/v3/users/me/calendarList"
+    params = {
+        "showHidden": "true",
+        "minAccessRole": "freeBusyReader",
+    }
     async with httpx.AsyncClient(timeout=20.0) as client:
-        resp = await client.get(url, headers=headers)
+        resp = await client.get(url, headers=headers, params=params)
         if resp.status_code != 200:
             raise HTTPException(status_code=502, detail=f"Google Calendar list error: {resp.text}")
         return resp.json().get("items", [])
@@ -406,24 +410,24 @@ async def calendar_today(authorization: Optional[str] = Header(default=None)):
 
     calendar_list = await fetch_google_calendar_list(access_token)
 
-selected_calendars = []
+    selected_calendars = []
+    for cal in calendar_list:
+        access_role = cal.get("accessRole")
+        if access_role in {"owner", "writer", "reader", "freeBusyReader"}:
+            selected_calendars.append({
+                "id": cal.get("id"),
+                "summary": cal.get("summary", "")
+            })
 
-for cal in calendar_list:
-    access_role = cal.get("accessRole")
-    if access_role in {"owner", "writer", "reader", "freeBusyReader"}:
-        selected_calendars.append({
-            "id": cal.get("id"),
-            "summary": cal.get("summary", "")
+    if not any(c["id"] == "primary" for c in selected_calendars):
+        selected_calendars.insert(0, {
+            "id": "primary",
+            "summary": "Primary"
         })
 
-# 혹시 primary가 빠지는 경우를 대비
-if not any(c["id"] == "primary" for c in selected_calendars):
-    selected_calendars.insert(0, {
-        "id": "primary",
-        "summary": "Primary"
-    })
-
     all_events = []
+    seen = set()
+
     for cal in selected_calendars:
         items = await fetch_google_events(
             access_token,
@@ -432,8 +436,15 @@ if not any(c["id"] == "primary" for c in selected_calendars):
             end_of_day.isoformat()
         )
         for item in items:
+            event_id = item.get("id")
+            if event_id and event_id in seen:
+                continue
+            if event_id:
+                seen.add(event_id)
+
             start = item.get("start", {}).get("dateTime") or item.get("start", {}).get("date")
             end = item.get("end", {}).get("dateTime") or item.get("end", {}).get("date")
+
             all_events.append({
                 "start": start,
                 "end": end,
@@ -444,17 +455,17 @@ if not any(c["id"] == "primary" for c in selected_calendars):
 
     all_events.sort(key=lambda x: x["start"] or "")
 
-return {
-    "date": start_of_day.date().isoformat(),
-    "events": all_events,
-    "workload_summary": summarize_workload(all_events),
-    "todo_suggestions": build_todo(all_events),
-    "debug": {
-        "calendar_count": len(calendar_list),
-        "selected_calendar_count": len(selected_calendars),
-        "selected_calendars": selected_calendars,
-        "event_count": len(all_events),
-        "time_min": start_of_day.isoformat(),
-        "time_max": end_of_day.isoformat(),
+    return {
+        "date": start_of_day.date().isoformat(),
+        "events": all_events,
+        "workload_summary": summarize_workload(all_events),
+        "todo_suggestions": build_todo(all_events),
+        "debug": {
+            "calendar_count": len(calendar_list),
+            "selected_calendar_count": len(selected_calendars),
+            "selected_calendars": selected_calendars,
+            "event_count": len(all_events),
+            "time_min": start_of_day.isoformat(),
+            "time_max": end_of_day.isoformat(),
+        }
     }
-}

@@ -23,7 +23,6 @@ SERVICE_ACCESS_TOKEN = os.getenv("SERVICE_ACCESS_TOKEN")
 
 NAVER_NEWS_URL = "https://openapi.naver.com/v1/search/news.json"
 
-
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 OAUTH_SIGNING_SECRET = os.getenv("OAUTH_SIGNING_SECRET")
@@ -38,10 +37,6 @@ GOOGLE_SCOPES = (
 
 KST = timezone(timedelta(hours=9))
 
-
-
-
-
 CATEGORY_QUERIES = {
     "agriculture": [
         "농업",
@@ -50,14 +45,14 @@ CATEGORY_QUERIES = {
         "농업기술",
         "농촌진흥청",
         "농림축산식품부",
-	"원예",
-	"과수",
-	"스마트팜",
-	"스마트 농업",
-	"가축",
-	"농업위성",
-	"기상재해",
-	"폭염",
+        "원예",
+        "과수",
+        "스마트팜",
+        "스마트 농업",
+        "가축",
+        "농업위성",
+        "기상재해",
+        "폭염",
     ],
     "it": [
         "AI",
@@ -65,27 +60,25 @@ CATEGORY_QUERIES = {
         "클라우드",
         "사이버보안",
         "빅테크",
-	"gpu",
-	"엔비디아",
-	"테슬라",
-	"인공지능",
-	"gpt",
-	"클로드",
-	"챗지피티",
-	"제미나이",
-	"라이다",
-	"애플",
-	"삼성전자",
-	"하이닉스",
-	"피지컬 ai",
-	"IT쇼",
-	"초거대 AI",
-	"AX",
-	"네이버",
-	"카카오",
-	"앤스로픽",
-	
-
+        "gpu",
+        "엔비디아",
+        "테슬라",
+        "인공지능",
+        "gpt",
+        "클로드",
+        "챗지피티",
+        "제미나이",
+        "라이다",
+        "애플",
+        "삼성전자",
+        "하이닉스",
+        "피지컬 ai",
+        "IT쇼",
+        "초거대 AI",
+        "AX",
+        "네이버",
+        "카카오",
+        "앤스로픽",
     ],
     "science": [
         "과학기술",
@@ -94,14 +87,15 @@ CATEGORY_QUERIES = {
         "우주",
         "바이오",
         "로봇",
-	"보안",
-	"NASA",
-	"아르테미스",
-	"양자컴퓨터",
-	"우주정거장",
-	"스마트홈",
+        "보안",
+        "NASA",
+        "아르테미스",
+        "양자컴퓨터",
+        "우주정거장",
+        "스마트홈",
     ],
 }
+
 
 class BriefingRequest(BaseModel):
     include_schedule: bool = False
@@ -110,10 +104,12 @@ class BriefingRequest(BaseModel):
     news_count_per_category: int = 3
     language: str = "ko"
 
+
 def clean_text(text: str) -> str:
     text = html.unescape(text or "")
     text = re.sub(r"<.*?>", "", text)
     return text.strip()
+
 
 def normalize_title(title: str) -> str:
     title = clean_text(title).lower()
@@ -121,12 +117,14 @@ def normalize_title(title: str) -> str:
     title = re.sub(r"\s+", " ", title).strip()
     return title
 
+
 def parse_pub_date(pub_date: str) -> str:
     try:
         dt = parsedate_to_datetime(pub_date)
         return dt.isoformat()
     except Exception:
         return pub_date
+
 
 async def fetch_news(query: str, display: int = 10, sort: str = "date") -> List[dict]:
     headers = {
@@ -146,6 +144,7 @@ async def fetch_news(query: str, display: int = 10, sort: str = "date") -> List[
         data = resp.json()
         return data.get("items", [])
 
+
 def dedupe_items(items: List[dict]) -> List[dict]:
     seen = set()
     result = []
@@ -157,6 +156,7 @@ def dedupe_items(items: List[dict]) -> List[dict]:
         result.append(item)
     return result
 
+
 def convert_item(item: dict) -> dict:
     return {
         "title": clean_text(item.get("title", "")),
@@ -166,17 +166,16 @@ def convert_item(item: dict) -> dict:
         "pub_date": parse_pub_date(item.get("pubDate", "")),
     }
 
+
 @app.get("/")
 def root():
     return {"message": "Daily Briefing API is running"}
 
+
 @app.post("/briefing")
 async def briefing(req: BriefingRequest):
-
-
-
-    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET or not SERVICE_ACCESS_TOKEN:
-        raise HTTPException(status_code=500, detail="Missing environment variables")
+    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Missing Naver environment variables")
 
     news_result: Dict[str, List[dict]] = {}
 
@@ -184,6 +183,7 @@ async def briefing(req: BriefingRequest):
         for category in req.news_categories:
             queries = CATEGORY_QUERIES.get(category, [])
             collected = []
+
             for q in queries:
                 items = await fetch_news(q, display=10, sort="date")
                 collected.extend(items)
@@ -200,17 +200,21 @@ async def briefing(req: BriefingRequest):
         "news": news_result,
     }
 
+
 def b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
+
 
 def b64url_decode(data: str) -> bytes:
     padding = "=" * (-len(data) % 4)
     return base64.urlsafe_b64decode(data + padding)
 
+
 def sign_payload(payload: dict) -> str:
     raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     sig = hmac.new(OAUTH_SIGNING_SECRET.encode("utf-8"), raw, hashlib.sha256).digest()
     return f"{b64url_encode(raw)}.{b64url_encode(sig)}"
+
 
 def verify_payload(token: str) -> dict:
     try:
@@ -393,8 +397,71 @@ def build_todo(events):
         todos.append("집중 시간이 확보되는 구간에 보고서 또는 분석 업무 진행")
     else:
         todos.append("일정 사이 자투리 시간을 활용해 즉시 처리할 업무 우선 정리")
-    todos.append("오늘 브리핑된 뉴스 중 업무 관련 기사 1~2건 우선 검토")
+    todos.append("오늘 일정 종료 전 후속 정리 사항 점검")
     return todos[:4]
+
+
+def is_followup_candidate(title: str) -> bool:
+    if not title:
+        return False
+    keywords = ["회의", "검토", "제출", "보고", "발표", "요청", "마감", "작성"]
+    return any(keyword in title for keyword in keywords)
+
+
+def summarize_yesterday_followups(events):
+    followups = []
+    for event in events:
+        title = event.get("title", "")
+        if is_followup_candidate(title):
+            followups.append(event)
+    return followups[:5]
+
+
+def is_holiday_calendar(calendar_name: str) -> bool:
+    if not calendar_name:
+        return False
+    holiday_keywords = ["대한민국의 휴일", "휴일", "공휴일", "Holidays in South Korea"]
+    return any(keyword in calendar_name for keyword in holiday_keywords)
+
+
+def classify_calendar_type(calendar_name: str) -> str:
+    if not calendar_name:
+        return "team"
+
+    lowered = calendar_name.strip().lower()
+
+    if is_holiday_calendar(calendar_name):
+        return "holiday"
+
+    personal_keywords = ["primary", "내 캘린더", "my calendar", "personal", "개인"]
+    if any(keyword in lowered for keyword in personal_keywords):
+        return "personal"
+
+    return "team"
+
+
+def group_events_by_type(events):
+    grouped = {
+        "personal": [],
+        "team": []
+    }
+
+    for event in events:
+        calendar_name = event.get("calendar_name", "")
+        calendar_type = classify_calendar_type(calendar_name)
+
+        if calendar_type == "holiday":
+            continue
+        if calendar_type in grouped:
+            grouped[calendar_type].append(event)
+
+    grouped["personal"].sort(key=lambda x: x["start"] or "")
+    grouped["team"].sort(key=lambda x: x["start"] or "")
+
+    return {
+        "personal_calendar_events": grouped["personal"],
+        "team_calendar_events": grouped["team"]
+    }
 
 
 @app.post("/calendar/today")
@@ -406,11 +473,9 @@ async def calendar_today(authorization: Optional[str] = Header(default=None)):
 
     now = datetime.now(KST)
 
-    # 오늘 범위
     start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
 
-    # 어제 범위
     yesterday = start_of_day - timedelta(days=1)
     start_of_yesterday = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
     end_of_yesterday = yesterday.replace(hour=23, minute=59, second=59, microsecond=0)
@@ -420,10 +485,16 @@ async def calendar_today(authorization: Optional[str] = Header(default=None)):
     selected_calendars = []
     for cal in calendar_list:
         access_role = cal.get("accessRole")
+        summary = cal.get("summary", "")
+        calendar_id = cal.get("id")
+
         if access_role in {"owner", "writer", "reader", "freeBusyReader"}:
+            if is_holiday_calendar(summary):
+                continue
+
             selected_calendars.append({
-                "id": cal.get("id"),
-                "summary": cal.get("summary", "")
+                "id": calendar_id,
+                "summary": summary
             })
 
     if not any(c["id"] == "primary" for c in selected_calendars):
@@ -438,7 +509,6 @@ async def calendar_today(authorization: Optional[str] = Header(default=None)):
     seen_yesterday = set()
 
     for cal in selected_calendars:
-        # 오늘 일정
         today_items = await fetch_google_events(
             access_token,
             cal["id"],
@@ -463,7 +533,6 @@ async def calendar_today(authorization: Optional[str] = Header(default=None)):
                 "calendar_name": cal["summary"]
             })
 
-        # 어제 일정
         yesterday_items = await fetch_google_events(
             access_token,
             cal["id"],
@@ -493,10 +562,17 @@ async def calendar_today(authorization: Optional[str] = Header(default=None)):
 
     yesterday_followups = summarize_yesterday_followups(yesterday_events)
 
+    grouped_today = group_events_by_type(today_events)
+    grouped_yesterday = group_events_by_type(yesterday_followups)
+
     return {
         "date": start_of_day.date().isoformat(),
         "events": today_events,
+        "personal_calendar_events": grouped_today["personal_calendar_events"],
+        "team_calendar_events": grouped_today["team_calendar_events"],
         "yesterday_followups": yesterday_followups,
+        "yesterday_personal_followups": grouped_yesterday["personal_calendar_events"],
+        "yesterday_team_followups": grouped_yesterday["team_calendar_events"],
         "workload_summary": summarize_workload(today_events),
         "todo_suggestions": build_todo(today_events),
         "debug": {
@@ -512,19 +588,3 @@ async def calendar_today(authorization: Optional[str] = Header(default=None)):
             "time_max_yesterday": end_of_yesterday.isoformat(),
         }
     }
-
-
-def is_followup_candidate(title: str) -> bool:
-    if not title:
-        return False
-    keywords = ["회의", "검토", "제출", "보고", "발표", "요청", "마감", "작성"]
-    return any(keyword in title for keyword in keywords)
-
-
-def summarize_yesterday_followups(events):
-    followups = []
-    for event in events:
-        title = event.get("title", "")
-        if is_followup_candidate(title):
-            followups.append(event)
-    return followups[:5]

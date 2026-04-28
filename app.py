@@ -389,6 +389,17 @@ def summarize_workload(events):
     return "오늘은 일정이 많은 편이므로 즉시 대응 업무 중심으로 운영하는 것이 좋습니다."
 
 
+def summarize_weekly_workload(events):
+    count = len(events)
+    if count == 0:
+        return "이번 주 남은 기간에는 확인 가능한 일정이 많지 않아 비교적 유연하게 업무를 운영할 수 있습니다."
+    if count <= 5:
+        return "이번 주 남은 일정은 많지 않아 주요 회의와 집중 업무를 함께 운영하기 좋습니다."
+    if count <= 12:
+        return "이번 주 남은 기간에는 일정과 후속 업무를 병행해야 하므로 중간 점검이 필요합니다."
+    return "이번 주 남은 기간에는 일정이 많은 편이므로 회의·검토·후속 조치를 체계적으로 관리하는 것이 좋습니다."
+
+
 def build_todo(events):
     todos = []
     if events:
@@ -398,6 +409,19 @@ def build_todo(events):
     else:
         todos.append("일정 사이 자투리 시간을 활용해 즉시 처리할 업무 우선 정리")
     todos.append("오늘 일정 종료 전 후속 정리 사항 점검")
+    return todos[:4]
+
+
+def build_weekly_todo(events):
+    todos = []
+    if events:
+        todos.append("이번 주 남은 주요 일정의 시간과 준비자료를 먼저 점검")
+    if len(events) <= 5:
+        todos.append("비어 있는 시간에 보고서·검토 등 집중 업무 배치")
+    else:
+        todos.append("회의와 검토 일정 사이 자투리 시간에 후속 업무 정리")
+    todos.append("개인 일정과 팀 일정의 충돌 여부 확인")
+    todos.append("주 후반 일정 대비 필요한 자료와 준비사항 미리 점검")
     return todos[:4]
 
 
@@ -462,6 +486,56 @@ def group_events_by_type(events):
         "personal_calendar_events": grouped["personal"],
         "team_calendar_events": grouped["team"]
     }
+
+
+def date_label_from_iso(dt_str: str) -> str:
+    if not dt_str:
+        return ""
+    try:
+        if "T" in dt_str:
+            dt = datetime.fromisoformat(dt_str)
+            d = dt.date()
+        else:
+            d = datetime.fromisoformat(dt_str).date()
+        weekday_map = ["월", "화", "수", "목", "금", "토", "일"]
+        return f"{d.month}/{d.day}({weekday_map[d.weekday()]})"
+    except Exception:
+        return dt_str
+
+
+def group_events_by_date_and_type(events):
+    grouped = {}
+
+    for event in events:
+        start = event.get("start", "")
+        date_label = date_label_from_iso(start)
+        if not date_label:
+            continue
+
+        calendar_type = classify_calendar_type(event.get("calendar_name", ""))
+        if calendar_type == "holiday":
+            continue
+
+        if date_label not in grouped:
+            grouped[date_label] = {
+                "date_label": date_label,
+                "personal_calendar_events": [],
+                "team_calendar_events": [],
+            }
+
+        if calendar_type == "personal":
+            grouped[date_label]["personal_calendar_events"].append(event)
+        else:
+            grouped[date_label]["team_calendar_events"].append(event)
+
+    grouped_list = list(grouped.values())
+
+    for item in grouped_list:
+        item["personal_calendar_events"].sort(key=lambda x: x.get("start", ""))
+        item["team_calendar_events"].sort(key=lambda x: x.get("start", ""))
+
+    grouped_list.sort(key=lambda x: x["date_label"])
+    return grouped_list
 
 
 @app.post("/calendar/today")
@@ -586,5 +660,94 @@ async def calendar_today(authorization: Optional[str] = Header(default=None)):
             "time_max_today": end_of_day.isoformat(),
             "time_min_yesterday": start_of_yesterday.isoformat(),
             "time_max_yesterday": end_of_yesterday.isoformat(),
+        }
+    }
+
+
+@app.post("/calendar/this-week")
+async def calendar_this_week(authorization: Optional[str] = Header(default=None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    access_token = authorization.replace("Bearer ", "", 1).strip()
+
+    now = datetime.now(KST)
+    start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    days_until_sunday = 6 - start_of_today.weekday()
+    end_of_week = (start_of_today + timedelta(days=days_until_sunday)).replace(
+        hour=23, minute=59, second=59, microsecond=0
+    )
+
+    calendar_list = await fetch_google_calendar_list(access_token)
+
+    selected_calendars = []
+    for cal in calendar_list:
+        access_role = cal.get("accessRole")
+        summary = cal.get("summary", "")
+        calendar_id = cal.get("id")
+
+        if access_role in {"owner", "writer", "reader", "freeBusyReader"}:
+            if is_holiday_calendar(summary):
+                continue
+
+            selected_calendars.append({
+                "id": calendar_id,
+                "summary": summary
+            })
+
+    if not any(c["id"] == "primary" for c in selected_calendars):
+        selected_calendars.insert(0, {
+            "id": "primary",
+            "summary": "Primary"
+        })
+
+    week_events = []
+    seen = set()
+
+    for cal in selected_calendars:
+        items = await fetch_google_events(
+            access_token,
+            cal["id"],
+            start_of_today.isoformat(),
+            end_of_week.isoformat()
+        )
+        for item in items:
+            event_id = item.get("id")
+            if event_id and event_id in seen:
+                continue
+            if event_id:
+                seen.add(event_id)
+
+            start = item.get("start", {}).get("dateTime") or item.get("start", {}).get("date")
+            end = item.get("end", {}).get("dateTime") or item.get("end", {}).get("date")
+
+            week_events.append({
+                "start": start,
+                "end": end,
+                "title": item.get("summary", "(제목 없음)"),
+                "location": item.get("location", ""),
+                "calendar_name": cal["summary"]
+            })
+
+    week_events.sort(key=lambda x: x.get("start", ""))
+
+    grouped_week_events = group_events_by_date_and_type(week_events)
+
+    return {
+        "date": start_of_today.date().isoformat(),
+        "range_start": start_of_today.isoformat(),
+        "range_end": end_of_week.isoformat(),
+        "events": week_events,
+        "grouped_week_events": grouped_week_events,
+        "workload_summary": summarize_weekly_workload(week_events),
+        "todo_suggestions": build_weekly_todo(week_events),
+        "debug": {
+            "calendar_count": len(calendar_list),
+            "selected_calendar_count": len(selected_calendars),
+            "selected_calendars": selected_calendars,
+            "week_event_count": len(week_events),
+            "range_start": start_of_today.isoformat(),
+            "range_end": end_of_week.isoformat(),
         }
     }

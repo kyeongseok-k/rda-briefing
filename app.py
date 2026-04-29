@@ -457,6 +457,10 @@ def classify_calendar_type(calendar_name: str) -> str:
     if is_holiday_calendar(calendar_name):
         return "holiday"
 
+    executive_keywords = ["연구정책국장", "국장", "국장님"]
+    if any(keyword in calendar_name for keyword in executive_keywords):
+        return "executive"
+
     personal_keywords = ["primary", "내 캘린더", "my calendar", "personal", "개인"]
     if any(keyword in lowered for keyword in personal_keywords):
         return "personal"
@@ -467,7 +471,8 @@ def classify_calendar_type(calendar_name: str) -> str:
 def group_events_by_type(events):
     grouped = {
         "personal": [],
-        "team": []
+        "team": [],
+        "executive": [],
     }
 
     for event in events:
@@ -481,10 +486,12 @@ def group_events_by_type(events):
 
     grouped["personal"].sort(key=lambda x: x["start"] or "")
     grouped["team"].sort(key=lambda x: x["start"] or "")
+    grouped["executive"].sort(key=lambda x: x["start"] or "")
 
     return {
         "personal_calendar_events": grouped["personal"],
-        "team_calendar_events": grouped["team"]
+        "team_calendar_events": grouped["team"],
+        "executive_calendar_events": grouped["executive"],
     }
 
 
@@ -521,10 +528,13 @@ def group_events_by_date_and_type(events):
                 "date_label": date_label,
                 "personal_calendar_events": [],
                 "team_calendar_events": [],
+                "executive_calendar_events": [],
             }
 
         if calendar_type == "personal":
             grouped[date_label]["personal_calendar_events"].append(event)
+        elif calendar_type == "executive":
+            grouped[date_label]["executive_calendar_events"].append(event)
         else:
             grouped[date_label]["team_calendar_events"].append(event)
 
@@ -533,6 +543,7 @@ def group_events_by_date_and_type(events):
     for item in grouped_list:
         item["personal_calendar_events"].sort(key=lambda x: x.get("start", ""))
         item["team_calendar_events"].sort(key=lambda x: x.get("start", ""))
+        item["executive_calendar_events"].sort(key=lambda x: x.get("start", ""))
 
     grouped_list.sort(key=lambda x: x["date_label"])
     return grouped_list
@@ -644,9 +655,11 @@ async def calendar_today(authorization: Optional[str] = Header(default=None)):
         "events": today_events,
         "personal_calendar_events": grouped_today["personal_calendar_events"],
         "team_calendar_events": grouped_today["team_calendar_events"],
+        "executive_calendar_events": grouped_today["executive_calendar_events"],
         "yesterday_followups": yesterday_followups,
         "yesterday_personal_followups": grouped_yesterday["personal_calendar_events"],
         "yesterday_team_followups": grouped_yesterday["team_calendar_events"],
+        "yesterday_executive_followups": grouped_yesterday["executive_calendar_events"],
         "workload_summary": summarize_workload(today_events),
         "todo_suggestions": build_todo(today_events),
         "debug": {
